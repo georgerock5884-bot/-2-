@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>WORLD COUNTRY QUIZ — 世界地図から国を当てよう</title>
+<meta name="google-site-verification" content="lA4QfspNU9dWf_EvblAJJVMhZtrzkMcy3qBzS9_q2MQ" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Zen+Old+Mincho:wght@500;700;900&family=Noto+Sans+JP:wght@400;500;700;900&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app"></div>
+
+<script src="countries-data.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+/* ==================== CONFIG ==================== */
+const GEOJSON_URL = "https://raw.githubusercontent.com/datasets/geo-countries/main/data/countries.geojson";
+const SOUND_ENABLED = false;
+const AUTO_ADVANCE_MS_CORRECT = 1400;
+const AUTO_ADVANCE_MS_WRONG = 2400;
+const CONTINENT_VIEW = window.WORLD_QUIZ_CONTINENT_VIEW || {};
+const MODES = {
+  easy:          { label:"初級",         count:15,  filter:c=>c.tier===1 },
+  medium:        { label:"中級",         count:40,  filter:c=>c.tier===2 },
+  advanced:      { label:"上級",         count:null, filter:c=>true },
+  asia:          { label:"アジア編",     count:null, filter:c=>c.continent==="asia" },
+  europe:        { label:"ヨーロッパ編", count:null, filter:c=>c.continent==="europe" },
+  africa:        { label:"アフリカ編",   count:null, filter:c=>c.continent==="africa" },
+  north_america: { label:"北アメリカ編", count:null, filter:c=>c.continent==="north_america" },
+  south_america: { label:"南アメリカ編", count:null, filter:c=>c.continent==="south_america" },
+  oceania:       { label:"オセアニア編", count:null, filter:c=>c.continent==="oceania" }
+};
+const CONTINENT_MODE_KEYS = ["asia","europe","africa","north_america","south_america","oceania"];
+
+/* ==================== STATE ==================== */
+let ALL_COUNTRIES = window.WORLD_QUIZ_COUNTRIES || [];
+let GEO_LOAD_STATE = "idle"; // idle | loading | ready | error
+let GEO_DATA = null;
+let map = null, geoLayer = null, targetLayerRef = null;
+
+let state = { screen:"title" };
+let quiz = null; // {difficulty, askCapital, list, index, results, streak, maxStreak, qStartTime, answered, showFlag}
+let pendingDifficulty = null;
+let geoFetchPromise = null;
+
+let FLAG_PREF = (function(){
+  try{ return localStorage.getItem("wcq_flag_pref") !== "hide"; }catch(e){ return true; }
+})();
+function setFlagPref(show){
+  FLAG_PREF = show;
+  try{ localStorage.setItem("wcq_flag_pref", show ? "show" : "hide"); }catch(e){}
+}
+let QUIZ_TYPE_PREF = (function(){
+  try{ return localStorage.getItem("wcq_quiz_type") === "capital" ? "capital" : "country"; }catch(e){ return "country"; }
+})();
+function setQuizTypePref(type){
+  QUIZ_TYPE_PREF = type;
+  try{ localStorage.setItem("wcq_quiz_type", type); }catch(e){}
+}
+
+/* ==================== UTIL ==================== */
+function kataToHira(s){
+  return s.replace(/[\u30a1-\u30f6]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0x60));
+}
+function normJa(s){
+  const cleaned = (s||"")
+    .toString()
+    .trim()
+    .toLowerCase()
+    .replace(/[\s　]+/g,"")
+    .replace(/[・\-.,、。’']/g,"");
+  return kataToHira(cleaned);
+}
+function normName(s){
+  return (s||"")
+    .toString()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g,"")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g," ")
+    .trim();
+}
+function emojiFlag(iso2){
+  try{
+    return iso2.toUpperCase().replace(/./g, ch => String.fromCodePoint(127397 + ch.charCodeAt(0)));
+  }catch(e){ return "🏳️"; }
+}
+function shuffle(arr){
+  const a = arr.slice();
+  for(let i=a.length-1;i>0;i--){
+    const j = Math.floor(Math.random()*(i+1));
+    [a[i],a[j]] = [a[j],a[i]];
+  }
+  return a;
+}
+function fmtTime(sec){ return sec.toFixed(2)+"秒"; }
+function fmtMinSec(totalSec){
+  const m = Math.floor(totalSec/60), s = Math.round(totalSec - m*60);
+  return m>0 ? `${m}分${s}秒` : `${s}秒`;
+}
+function go(next){ state = {...state, ...(next||{})}; render(); window.scrollTo({top:0,behavior:"smooth"}); }
+
+/* ==================== SOUND (WebAudio, no external files) ==================== */
+let actx = null;
+function beep(freqStart, freqEnd, dur, type){
+  if(!SOUND_ENABLED) return;
+  try{
+    if(!actx) actx = new (window.AudioContext||window.webkitAudioContext)();
+    const osc = actx.createOscillator();
+    const gain = actx.createGain();
+    osc.type = type || "sine";
+    osc.frequency.setValueAtTime(freqStart, actx.currentTime);
+    osc.frequency.linearRampToValueAtTime(freqEnd, actx.currentTime+dur);
+    gain.gain.setValueAtTime(0.001, actx.currentTime);
+    gain.gain.linearRampToValueAtTime(0.18, actx.currentTime+0.02);
+    gain.gain.exponentialRampToValueAtTime(0.001, actx.currentTime+dur);
+    osc.connect(gain); gain.connect(actx.destination);
+    osc.start(); osc.stop(actx.currentTime+dur+0.02);
+  }catch(e){ /* audio not available — silently ignore */ }
+}
+function playCorrectSound(){ beep(520,880,0.25,"triangle"); }
+function playWrongSound(){ beep(220,110,0.32,"sawtooth"); }
+
+/* ==================== LOCAL BEST SCORES ==================== */
+function bestKey(diff, askCapital){ return "wcq_best_"+diff+(askCapital?"_cap":""); }
+function getBest(diff, askCapital){
+  try{ return JSON.parse(localStorage.getItem(bestKey(diff, askCapital))||"null"); }catch(e){ return null; }
+}
+function saveBestIfBetter(diff, askCapital, summary){
+  const prev = getBest(diff, askCapital);
+  let isNew = false;
+  if(!prev || summary.accuracy > prev.accuracy || (summary.accuracy===prev.accuracy && summary.avgTime < prev.avgTime)){
+    try{ localStorage.setItem(bestKey(diff, askCapital), JSON.stringify(summary)); }catch(e){}
+    isNew = true;
+  }
+  return isNew;
+}
+function getMaxStreak(){
+  try{ return parseInt(localStorage.getItem("wcq_max_streak")||"0",10); }catch(e){ return 0; }
+}
+function saveMaxStreak(v){
+  const cur = getMaxStreak();
+  if(v>cur){ try{ localStorage.setItem("wcq_max_streak", String(v)); }catch(e){} return true; }
+  return false;
+}
+
+/* ==================== GEO DATA LOADING & MATCHING ==================== */
+function loadGeoData(){
+  if(geoFetchPromise) return geoFetchPromise;
+  GEO_LOAD_STATE = "loading";
+  render();
+  geoFetchPromise = (async ()=>{
+    try{
+      const res = await fetch(GEOJSON_URL);
+      if(!res.ok) throw new Error("HTTP "+res.status);
+      const data = await res.json();
+      if(!data || !Array.isArray(data.features) || data.features.length===0) throw new Error("empty geojson");
+      GEO_DATA = data;
+      resolveCountryFeatures();
+      GEO_LOAD_STATE = "ready";
+    }catch(e){
+      console.error("地図データの読み込みに失敗しました", e);
+      GEO_LOAD_STATE = "error";
+    }
+    geoFetchPromise = null;
+    if(GEO_LOAD_STATE==="ready" && pendingDifficulty){
+      const d = pendingDifficulty; pendingDifficulty = null;
+      startQuiz(d);
+    }else{
+      render();
+    }
+  })();
+  return geoFetchPromise;
+}
+
+function resolveCountryFeatures(){
+  const byA3 = {}, byName = {};
+  GEO_DATA.features.forEach(f=>{
+    const p = f.properties || {};
+    const a3 = p["ISO3166-1-Alpha-3"];
+    const nm = normName(p.name);
+    if(a3 && a3 !== "-99") byA3[a3] = f;
+    if(nm && !byName[nm]) byName[nm] = f;
+  });
+  ALL_COUNTRIES.forEach(c=>{
+    let f = byA3[c.a3];
+    if(!f){
+      const candidates = [c.en, ...(c.geoNames||[])];
+      for(const cand of candidates){
+        const nm = normName(cand);
+        if(byName[nm]){ f = byName[nm]; break; }
+      }
+    }
+    c._feature = f || null;
+    if(!f) console.warn("地図データに一致する国が見つかりません（除外されます）:", c.ja, c.a3);
+  });
+}
+
+function playableCountries(){
+  return ALL_COUNTRIES.filter(c=>c._feature);
+}
+
+/* ==================== QUIZ SETUP ==================== */
+function buildQuestionList(modeKey, askCapital){
+  const cfg = MODES[modeKey];
+  let pool = playableCountries().filter(cfg.filter);
+  if(askCapital) pool = pool.filter(c=>c.capitals && c.capitals.length>0);
+  if(!cfg.count){
+    return shuffle(pool);
+  }
+  const n = Math.min(cfg.count, pool.length);
+  return shuffle(pool).slice(0, n);
+}
+
+function startQuiz(modeKey){
+  const askCapital = QUIZ_TYPE_PREF === "capital";
+  const list = buildQuestionList(modeKey, askCapital);
+  quiz = {
+    difficulty: modeKey,
+    askCapital,
+    list,
+    index: 0,
+    results: [],
+    streak: 0,
+    maxStreak: 0,
+    qStartTime: performance.now(),
+    answered: false,
+    showFlag: FLAG_PREF
+  };
+  go({ screen:"quiz" });
+}
+
+function currentCountry(){ return quiz.list[quiz.index]; }
+
+/* ==================== ANSWERING ==================== */
+function checkAnswer(){
+  if(!quiz || quiz.answered) return;
+  const input = document.getElementById("answerInput");
+  const raw = input.value;
+  const val = normJa(raw);
+  if(!val){
+    input.classList.add("wrong");
+    setTimeout(()=>input.classList.remove("wrong"), 300);
+    return;
+  }
+  const c = currentCountry();
+  const answerPool = quiz.askCapital ? (c.capitals||[]) : [c.ja, ...(c.aliases||[])];
+  const candidates = answerPool.map(normJa);
+  const correct = candidates.includes(val);
+  const elapsed = (performance.now() - quiz.qStartTime)/1000;
+
+  quiz.answered = true;
+  quiz.results.push({ country:c, correct, time:elapsed });
+  if(correct){
+    quiz.streak += 1;
+    quiz.maxStreak = Math.max(quiz.maxStreak, quiz.streak);
+    playCorrectSound();
+  }else{
+    quiz.streak = 0;
+    input.classList.add("wrong");
+    playWrongSound();
+  }
+  input.disabled = true;
+  const answerBtn = document.getElementById("answerBtn");
+  if(answerBtn) answerBtn.disabled = true;
+  showFeedback(correct, c, elapsed);
+  highlightAnswerOnMap(c);
+  scheduleAutoAdvance(correct);
+}
+
+function showFeedback(correct, c, elapsed){
+  const panel = document.getElementById("feedback");
+  panel.className = "feedback-panel show " + (correct ? "ok":"ng");
+  const correctAnswerLabel = quiz.askCapital ? (c.capitals && c.capitals[0]) : c.ja;
+  const subLabel = quiz.askCapital ? `（${c.ja}の首都）` : "";
+  panel.innerHTML = `
+    <img src="https://flagcdn.com/w160/${c.a2}.png" onerror="this.replaceWith(flagEmojiEl('${c.a2}', true))" alt="${c.ja}の国旗">
+    <div class="txt">
+      <b>${correct ? "正解！" : "不正解"} — ${correctAnswerLabel}${subLabel}</b>
+      <div>回答タイム: ${fmtTime(elapsed)}${correct ? "" : "　正解は「"+correctAnswerLabel+"」でした"}</div>
+      <div class="advance-note">${quiz.index < quiz.list.length-1 ? "まもなく次の問題へ…" : "まもなく結果画面へ…"}</div>
+    </div>
+  `;
+}
+
+let autoAdvanceHandle = null;
+function scheduleAutoAdvance(correct){
+  if(autoAdvanceHandle) clearTimeout(autoAdvanceHandle);
+  const delay = correct ? AUTO_ADVANCE_MS_CORRECT : AUTO_ADVANCE_MS_WRONG;
+  autoAdvanceHandle = setTimeout(()=>{
+    autoAdvanceHandle = null;
+    if(quiz && quiz.answered && state.screen==="quiz"){ nextQuestion(); }
+  }, delay);
+}
+
+function flagEmojiEl(a2, small){
+  const span = document.createElement("span");
+  span.className = "flag-emoji";
+  if(small){
+    span.style.width="46px"; span.style.height="34px"; span.style.fontSize="22px";
+    span.style.display="flex"; span.style.alignItems="center"; span.style.justifyContent="center";
+    span.style.borderRadius="4px"; span.style.background="var(--surface-2)"; span.style.flexShrink="0";
+  }
+  span.textContent = emojiFlag(a2);
+  return span;
+}
+window.flagEmojiEl = flagEmojiEl;
+
+function nextQuestion(){
+  if(quiz.index < quiz.list.length - 1){
+    quiz.index += 1;
+    quiz.answered = false;
+    quiz.qStartTime = performance.now();
+    render();
+  }else{
+    finishQuiz();
+  }
+}
+
+function finishQuiz(){
+  const results = quiz.results;
+  const correctCount = results.filter(r=>r.correct).length;
+  const total = results.length;
+  const accuracy = total ? (correctCount/total*100) : 0;
+  const times = results.map(r=>r.time);
+  const totalTime = times.reduce((a,b)=>a+b,0);
+  const avgTime = total ? totalTime/total : 0;
+  const bestTime = times.length ? Math.min(...times) : 0;
+
+  const summary = {
+    correctCount, total, accuracy, avgTime, bestTime, totalTime,
+    date: new Date().toISOString()
+  };
+  const isNewBest = saveBestIfBetter(quiz.difficulty, quiz.askCapital, summary);
+  const isNewStreak = saveMaxStreak(quiz.maxStreak);
+
+  go({ screen:"result", lastSummary: summary, lastIsNewBest: isNewBest, lastIsNewStreak: isNewStreak, lastMaxStreak: quiz.maxStreak });
+}
+
+function rankOf(accuracy){
+  if(accuracy>=95) return "S";
+  if(accuracy>=85) return "A";
+  if(accuracy>=70) return "B";
+  if(accuracy>=50) return "C";
+  return "D";
+}
+
+/* ==================== QUIT / ABORT ==================== */
+function requestQuit(){
+  if(autoAdvanceHandle){ clearTimeout(autoAdvanceHandle); autoAdvanceHandle = null; }
+  go({ screen:"quiz", showQuitModal:true });
+}
+function cancelQuit(){
+  go({ showQuitModal:false });
+}
+function confirmQuit(){
+  quiz = null;
+  pendingDifficulty = null;
+  go({ screen:"title", showQuitModal:false });
+}
+
+/* ==================== MAP ==================== */
+function ensureMap(){
+  const container = document.getElementById("map");
+  if(!container) return;
+  if(map){ map.remove(); map = null; }
+  map = L.map("map", {
+    zoomControl:false,
+    attributionControl:false,
+    minZoom:1, maxZoom:7,
+    worldCopyJump:false,
+    maxBounds:[[-95,-200],[95,200]]
+  });
+  L.control.zoom({position:"bottomright"}).addTo(map);
+
+  geoLayer = L.geoJSON(GEO_DATA, {
+    style: baseStyle,
+    onEachFeature: (feature, layer)=>{ layer._wcqFeature = feature; }
+  }).addTo(map);
+
+  try{
+    map.fitBounds(geoLayer.getBounds(), { padding:[6,6] });
+  }catch(e){
+    map.setView([15,10], 2);
+  }
+}
+
+const COUNTRY_VIEW_OVERRIDE = {
+  // ロシアは大陸区分上ヨーロッパ寄りだが国土が東西に非常に広いため専用の表示範囲を使う
+  RUS: { bounds: [[41, 19], [82, 180]] }
+};
+function zoomToContinent(country){
+  if(!map) return;
+  const override = country && COUNTRY_VIEW_OVERRIDE[country.a3];
+  const continent = country ? country.continent : null;
+  const v = override || CONTINENT_VIEW[continent];
+  if(!v){ try{ map.fitBounds(geoLayer.getBounds(), { padding:[6,6] }); }catch(e){} return; }
+  try{
+    if(v.bounds) map.fitBounds(v.bounds, { padding:[16,16] });
+    else if(v.center) map.setView(v.center, v.zoom || 3);
+  }catch(e){}
+}
+
+function baseStyle(){
+  return { color:"#2a3346", weight:0.7, fillColor:"#1a2133", fillOpacity:1 };
+}
+function targetStyle(){
+  return { color:"#e3c375", weight:1.6, fillColor:"#e2493d", fillOpacity:0.92 };
+}
+
+function highlightAnswerOnMap(country){
+  if(!geoLayer) return;
+  geoLayer.eachLayer(l=>{
+    l.setStyle(baseStyle());
+    if(l._path) l._path.classList.remove("country-target");
+  });
+
+  const feature = country._feature;
+  if(!feature) return;
+  geoLayer.eachLayer(l=>{
+    if(l._wcqFeature === feature){
+      l.setStyle(targetStyle());
+      l.bringToFront();
+      if(l._path) l._path.classList.add("country-target");
+      targetLayerRef = l;
+    }
+  });
+}
+
+function recenterMap(){
+  if(!map || !quiz) return;
+  zoomToContinent(currentCountry());
+}
+
+/* ==================== RENDER ==================== */
+function renderTitle(){
+  const cap = QUIZ_TYPE_PREF === "capital";
+  const easyBest = getBest("easy", cap), medBest = getBest("medium", cap), advBest = getBest("advanced", cap);
+  const advCount = playableCountries().filter(c=> !cap || (c.capitals && c.capitals.length>0)).length || ALL_COUNTRIES.length;
+  const bestLine = (b)=> b ? `自己ベスト: 正答率${b.accuracy.toFixed(0)}% ／ 平均${b.avgTime.toFixed(2)}秒` : "まだ記録がありません";
+
+  const continentCards = CONTINENT_MODE_KEYS.map(key=>{
+    let cnt = playableCountries().filter(MODES[key].filter);
+    if(cap) cnt = cnt.filter(c=>c.capitals && c.capitals.length>0);
+    cnt = cnt.length;
+    const best = getBest(key, cap);
+    return `
+    <div class="card diff-card continent-card">
+      <h3>${MODES[key].label}</h3>
+      <p>全${cnt}か国を重複なしで出題。</p>
+      <div class="best">${bestLine(best)}</div>
+      <button class="btn btn-gold" onclick="handleStart('${key}')">${cnt}問プレイする</button>
+    </div>`;
+  }).join("");
+
+  return `
+  <div class="hero">
+    <p class="eyebrow">GEOGRAPHY CHALLENGE</p>
+    <h1>WORLD COUNTRY <span>QUIZ</span></h1>
+    <p>世界地図から国を当てよう。地図の赤いハイライトが手がかりです。</p>
+  </div>
+  <div class="type-toggle-row">
+    <div class="type-toggle">
+      <button class="${!cap?"active":""}" onclick="setQuizTypePref('country'); render()">国名を当てる</button>
+      <button class="${cap?"active":""}" onclick="setQuizTypePref('capital'); render()">首都を当てる</button>
+    </div>
+  </div>
+  <div class="flag-toggle-row">
+    <label class="flag-toggle">
+      <input type="checkbox" id="flagPrefCheckbox" ${FLAG_PREF ? "checked" : ""} onchange="setFlagPref(this.checked); render()">
+      <span>国旗を表示する</span>
+    </label>
+    <span class="flag-toggle-note">オフにすると地図だけで勝負できます</span>
+  </div>
+  <div class="diff-grid">
+    <div class="card diff-card">
+      <div class="lv">LEVEL 01</div>
+      <h3>初級</h3>
+      <p>誰もが知る有名な国が中心。15問でウォームアップ。</p>
+      <div class="best">${bestLine(easyBest)}</div>
+      <button class="btn btn-gold" onclick="handleStart('easy')">15問プレイする</button>
+    </div>
+    <div class="card diff-card">
+      <div class="lv">LEVEL 02</div>
+      <h3>中級</h3>
+      <p>世界地理をある程度知っていないと厳しい40問。</p>
+      <div class="best">${bestLine(medBest)}</div>
+      <button class="btn btn-gold" onclick="handleStart('medium')">40問プレイする</button>
+    </div>
+    <div class="card diff-card">
+      <div class="lv">LEVEL 03</div>
+      <h3>上級</h3>
+      <p>全${advCount}か国を重複なしですべて出題。真の実力者向け。</p>
+      <div class="best">${bestLine(advBest)}</div>
+      <button class="btn btn-primary" onclick="handleStart('advanced')">全${advCount}問に挑む</button>
+    </div>
+  </div>
+  <p class="eyebrow" style="margin-top:34px;">CONTINENT CHALLENGE — 大陸別クイズ</p>
+  <div class="diff-grid continent-grid">${continentCards}</div>
+  <footer class="note">地図データ: Natural Earth / datasets.io ・ 国旗: flagcdn.com${cap ? "・ 首都は複数首都を持つ国はいずれか一つの回答で正解になります" : ""}</footer>
+  `;
+}
+
+function renderLoading(){
+  return `<div class="center-msg"><div class="spinner"></div><div>地図データを読み込んでいます…</div></div>`;
+}
+function renderError(){
+  return `<div class="center-msg">
+    <div style="font-size:36px;">🗺️</div>
+    <div>地図データの読み込みに失敗しました。<br>ネットワーク接続を確認してもう一度お試しください。</div>
+    <button class="btn btn-gold" onclick="loadGeoData()">再読み込み</button>
+    <button class="btn btn-ghost" onclick="pendingDifficulty=null; go({screen:'title'})">タイトルに戻る</button>
+  </div>`;
+}
+
+function renderQuitModal(){
+  return `
+  <div class="modal-backdrop">
+    <div class="card modal-card">
+      <h3>クイズを中断しますか？</h3>
+      <p>ここまでの記録は保存されず、タイトル画面に戻ります。</p>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" onclick="cancelQuit()">続ける</button>
+        <button class="btn btn-primary" onclick="confirmQuit()">中断する</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderQuiz(){
+  const c = currentCountry();
+  const diffLabel = MODES[quiz.difficulty].label + (quiz.askCapital ? "・首都" : "");
+  const flagToggleLabel = quiz.showFlag ? "🚩 国旗を隠す" : "🚩 国旗を表示";
+  const placeholder = quiz.askCapital ? "首都名を入力（例：東京）" : "国名を入力（例：日本）";
+  return `
+  <div class="quiz-head">
+    <div class="quiz-head-left">
+      <button class="btn-danger-ghost" onclick="requestQuit()">✕ 中断する</button>
+      <div class="qcount">${diffLabel} ・ QUESTION <b>${quiz.index+1}</b> / ${quiz.list.length}</div>
+    </div>
+    <div class="stat-pill">
+      <button class="btn-ghost flag-toggle-btn" onclick="toggleFlagInQuiz()">${flagToggleLabel}</button>
+      <div class="streak">連続正解 <b>${quiz.streak}</b></div>
+      <div class="timer" id="liveTimer">0.00秒</div>
+    </div>
+  </div>
+  <div class="quiz-body ${quiz.showFlag ? "" : "no-flag"}">
+    ${quiz.showFlag ? `
+    <div class="card flag-box">
+      <img src="https://flagcdn.com/w320/${c.a2}.png" onerror="this.replaceWith(flagEmojiEl('${c.a2}'))" alt="国旗">
+    </div>` : ``}
+    <div class="card" style="padding:12px;">
+      <div class="map-wrap">
+        <div id="map"></div>
+        <button class="recenter-btn" onclick="recenterMap()">🧭 表示を戻す</button>
+      </div>
+      <div class="answer-row">
+        <input id="answerInput" type="text" placeholder="${placeholder}" autocomplete="off" spellcheck="false" />
+        <button class="btn btn-primary" id="answerBtn" onclick="checkAnswer()">回答</button>
+      </div>
+      <div id="feedback" class="feedback-panel"></div>
+    </div>
+  </div>
+  ${state.showQuitModal ? renderQuitModal() : ""}
+  `;
+}
+
+function toggleFlagInQuiz(){
+  if(!quiz) return;
+  quiz.showFlag = !quiz.showFlag;
+  setFlagPref(quiz.showFlag);
+  render();
+}
+
+function renderResult(){
+  const s = state.lastSummary;
+  const rank = rankOf(s.accuracy);
+  const diffLabel = MODES[quiz.difficulty].label + (quiz.askCapital ? "・首都" : "");
+  return `
+  <div class="result">
+    <p class="eyebrow">RESULT — ${diffLabel}</p>
+    <div class="rank-badge">${rank}</div>
+    <h2>SCORE</h2>
+    <div class="sub">${s.correctCount} / ${s.total} 問正解</div>
+    ${state.lastIsNewBest ? `<div class="new-best">自己ベスト更新！</div>` : ``}
+    ${state.lastIsNewStreak ? `<div class="new-best" style="border-color:var(--gold); color:var(--gold);">最大連続正解 記録更新！（${state.lastMaxStreak}問）</div>` : ``}
+    <div class="stat-grid">
+      <div class="card stat-cell"><div class="lbl">正答率</div><div class="val">${s.accuracy.toFixed(1)}%</div></div>
+      <div class="card stat-cell"><div class="lbl">平均回答時間</div><div class="val">${s.avgTime.toFixed(2)}秒</div></div>
+      <div class="card stat-cell"><div class="lbl">最速回答</div><div class="val">${s.bestTime.toFixed(2)}秒</div></div>
+      <div class="card stat-cell"><div class="lbl">正解数</div><div class="val">${s.correctCount}問</div></div>
+      <div class="card stat-cell"><div class="lbl">不正解数</div><div class="val">${s.total-s.correctCount}問</div></div>
+      <div class="card stat-cell"><div class="lbl">合計時間</div><div class="val">${fmtMinSec(s.totalTime)}</div></div>
+    </div>
+    <div class="result-actions">
+      <button class="btn btn-gold" onclick="handleStart('${quiz.difficulty}')">もう一度プレイ</button>
+      <button class="btn btn-ghost" onclick="go({screen:'title'})">難易度選択に戻る</button>
+    </div>
+  </div>
+  `;
+}
+
+function render(){
+  const app = document.getElementById("app");
+  let html = "";
+  if(state.screen==="title") html = renderTitle();
+  else if(state.screen==="quiz"){
+    if(GEO_LOAD_STATE==="loading") html = renderLoading();
+    else if(GEO_LOAD_STATE==="error") html = renderError();
+    else html = renderQuiz();
+  }
+  else if(state.screen==="result") html = renderResult();
+  else html = renderLoading();
+
+  app.innerHTML = html;
+
+  if(state.screen==="quiz" && GEO_LOAD_STATE==="ready"){
+    ensureMap();
+    zoomToContinent(currentCountry());
+    highlightAnswerOnMap(currentCountry());
+    const input = document.getElementById("answerInput");
+    if(input){
+      input.focus();
+      input.addEventListener("input", ()=> input.classList.remove("wrong"));
+      input.addEventListener("keydown", e=>{
+        if(e.key==="Enter"){
+          e.preventDefault();
+          if(!quiz.answered) checkAnswer();
+        }
+      });
+    }
+    if(quiz.answered){
+      const answerBtn = document.getElementById("answerBtn");
+      if(answerBtn) answerBtn.disabled = true;
+    }
+    startLiveTimer();
+  }
+}
+
+let liveTimerHandle = null;
+function startLiveTimer(){
+  if(liveTimerHandle) cancelAnimationFrame(liveTimerHandle);
+  const el = document.getElementById("liveTimer");
+  function tick(){
+    if(!quiz || state.screen!=="quiz" || !el) return;
+    if(!quiz.answered){
+      const t = (performance.now()-quiz.qStartTime)/1000;
+      el.textContent = t.toFixed(2)+"秒";
+    }
+    liveTimerHandle = requestAnimationFrame(tick);
+  }
+  tick();
+}
+
+function handleStart(diffKey){
+  if(GEO_LOAD_STATE==="ready"){
+    startQuiz(diffKey);
+    return;
+  }
+  pendingDifficulty = diffKey;
+  go({ screen:"quiz" });
+  loadGeoData();
+}
+
+/* ==================== INIT ==================== */
+render();
+loadGeoData();
+</script>
+</body>
+</html>
