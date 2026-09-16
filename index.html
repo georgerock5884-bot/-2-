@@ -11,6 +11,10 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
+<div id="playerNameBox" class="player-name-box">
+  <span class="player-name-icon">🧑</span>
+  <input id="playerNameInput" type="text" maxlength="16" placeholder="名前を入力" autocomplete="off" />
+</div>
 <div id="app"></div>
 
 <script src="countries-data.js"></script>
@@ -21,6 +25,13 @@ const GEOJSON_URL = "https://raw.githubusercontent.com/datasets/geo-countries/ma
 const SOUND_ENABLED = false;
 const AUTO_ADVANCE_MS_CORRECT = 1400;
 const AUTO_ADVANCE_MS_WRONG = 2400;
+
+/* dreamlo.com で作った自分のリーダーボードのコードに書き換えてください
+   1. https://dreamlo.com/lb/ にアクセス（登録不要）
+   2. リーダーボードを作成すると「Private Code」と「Public Code」が発行される
+   3. 下の2行に貼り付ける（Private Codeは絶対に他人に教えないこと） */
+const DREAMLO_PRIVATE_CODE = "YOUR_PRIVATE_CODE";
+const DREAMLO_PUBLIC_CODE = "YOUR_PUBLIC_CODE";
 const CONTINENT_VIEW = window.WORLD_QUIZ_CONTINENT_VIEW || {};
 const MODES = {
   easy:          { label:"初級",         count:15,  filter:c=>c.tier===1 },
@@ -82,6 +93,12 @@ function setTheme(t){
   if(geoLayer){ geoLayer.eachLayer(l=>l.setStyle(baseStyle())); }
   if(quiz && state.screen==="quiz" && GEO_LOAD_STATE==="ready"){ highlightAnswerOnMap(currentCountry()); }
   render();
+}
+let PLAYER_NAME = (function(){
+  try{ return localStorage.getItem("wcq_player_name") || ""; }catch(e){ return ""; }
+})();
+function escapeHtml(s){
+  return (s||"").toString().replace(/[&<>"']/g, ch=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]));
 }
 
 /* ==================== UTIL ==================== */
@@ -410,6 +427,59 @@ function rankOf(accuracy){
   return "D";
 }
 
+/* ==================== ONLINE RANKING (dreamlo) ==================== */
+function rankingModeKey(){
+  return quiz.difficulty + "|" + (quiz.askCapital ? "capital" : "country");
+}
+function modeLabel(modeKey){
+  const [diff, type] = (modeKey||"").split("|");
+  const base = MODES[diff] ? MODES[diff].label : diff;
+  return base + (type==="capital" ? "・首都" : "");
+}
+async function submitScoreToDreamlo(modeKey, score, seconds){
+  const rawName = PLAYER_NAME.trim().slice(0,16);
+  const uniqueName = encodeURIComponent(`${rawName}::${modeKey}`);
+  const url = `https://www.dreamlo.com/lb/${DREAMLO_PRIVATE_CODE}/add/${uniqueName}/${Math.max(0,Math.round(score))}/${Math.max(0,Math.round(seconds))}/${encodeURIComponent(modeKey)}`;
+  const res = await fetch(url);
+  if(!res.ok) throw new Error("dreamlo submit failed: HTTP "+res.status);
+}
+async function fetchDreamloEntries(modeKey){
+  const res = await fetch(`https://www.dreamlo.com/lb/${DREAMLO_PUBLIC_CODE}/json`);
+  if(!res.ok) throw new Error("dreamlo fetch failed: HTTP "+res.status);
+  const data = await res.json();
+  let raw = data && data.dreamlo && data.dreamlo.leaderboard ? data.dreamlo.leaderboard.entry : null;
+  if(!raw) raw = [];
+  if(!Array.isArray(raw)) raw = [raw];
+  return raw
+    .filter(e => e && e.text === modeKey)
+    .map(e => ({
+      displayName: (e.name || "").split("::")[0],
+      score: parseInt(e.score, 10) || 0,
+      seconds: parseInt(e.seconds, 10) || 0
+    }))
+    .sort((a,b)=> b.score - a.score)
+    .slice(0, 20);
+}
+async function showRanking(){
+  if(!quiz || !state.lastSummary) return;
+  if(!PLAYER_NAME || !PLAYER_NAME.trim()){
+    const nameInput = document.getElementById("playerNameInput");
+    if(nameInput) nameInput.focus();
+    alert("画面左上で名前を入力してから、もう一度ランキングボタンを押してください。");
+    return;
+  }
+  const modeKey = rankingModeKey();
+  go({ screen:"ranking", rankingMode:modeKey, rankingLoading:true, rankingError:false, rankingEntries:null });
+  try{
+    await submitScoreToDreamlo(modeKey, state.lastSummary.totalScore, state.lastSummary.totalTime);
+    const entries = await fetchDreamloEntries(modeKey);
+    go({ rankingLoading:false, rankingEntries:entries });
+  }catch(e){
+    console.error("ランキングの通信に失敗しました", e);
+    go({ rankingLoading:false, rankingError:true });
+  }
+}
+
 /* ==================== QUIT / ABORT ==================== */
 function requestQuit(){
   if(autoAdvanceHandle){ clearTimeout(autoAdvanceHandle); autoAdvanceHandle = null; }
@@ -687,8 +757,49 @@ function renderResult(){
     </div>
     <div class="result-actions">
       <button class="btn btn-gold" onclick="handleStart('${quiz.difficulty}')">もう一度プレイ</button>
+      <button class="btn btn-primary" onclick="showRanking()">🏆 ランキングを見る</button>
       <button class="btn btn-ghost" onclick="go({screen:'title'})">難易度選択に戻る</button>
     </div>
+  </div>
+  `;
+}
+
+function renderRanking(){
+  const modeKey = state.rankingMode;
+  const label = modeLabel(modeKey);
+  let body;
+  if(state.rankingLoading){
+    body = `<div class="center-msg" style="padding:40px 0;"><div class="spinner"></div><div>ランキングを送信・取得しています…</div></div>`;
+  }else if(state.rankingError){
+    body = `<div class="center-msg" style="padding:40px 0;">
+      <div>ランキングの通信に失敗しました。通信環境を確認してもう一度お試しください。</div>
+      <button class="btn btn-gold" onclick="showRanking()">再試行</button>
+    </div>`;
+  }else{
+    const entries = state.rankingEntries || [];
+    if(entries.length===0){
+      body = `<div class="center-msg" style="padding:40px 0;"><div>まだ記録がありません。あなたが最初の挑戦者です！</div></div>`;
+    }else{
+      const myName = PLAYER_NAME.trim();
+      body = `<div class="ranking-list">` + entries.map((e,i)=>{
+        const mine = e.displayName === myName;
+        return `<div class="ranking-row ${mine?"mine":""}">
+          <div class="rk-pos">${i+1}</div>
+          <div class="rk-name">${escapeHtml(e.displayName)}</div>
+          <div class="rk-score">${e.score}pt</div>
+        </div>`;
+      }).join("") + `</div>`;
+    }
+  }
+  return `
+  <div class="result">
+    <p class="eyebrow">RANKING — ${label}</p>
+    <h2>🏆 ランキング</h2>
+  </div>
+  ${body}
+  <div class="result-actions">
+    <button class="btn btn-ghost" onclick="go({screen:'result'})">結果画面に戻る</button>
+    <button class="btn btn-ghost" onclick="go({screen:'title'})">タイトルに戻る</button>
   </div>
   `;
 }
@@ -703,6 +814,7 @@ function render(){
     else html = renderQuiz();
   }
   else if(state.screen==="result") html = renderResult();
+  else if(state.screen==="ranking") html = renderRanking();
   else html = renderLoading();
 
   app.innerHTML = html;
@@ -757,6 +869,15 @@ function handleStart(diffKey){
 }
 
 /* ==================== INIT ==================== */
+(function initPlayerNameBox(){
+  const input = document.getElementById("playerNameInput");
+  if(!input) return;
+  input.value = PLAYER_NAME;
+  input.addEventListener("input", ()=>{
+    PLAYER_NAME = input.value;
+    try{ localStorage.setItem("wcq_player_name", PLAYER_NAME); }catch(e){}
+  });
+})();
 render();
 loadGeoData();
 </script>
