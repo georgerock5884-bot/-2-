@@ -38,7 +38,7 @@ input{font-family:var(--font-mono);}
   padding:7px 14px 7px 12px;
   box-shadow:0 4px 14px rgba(0,0,0,.25);
 }
-.player-name-icon{ font-size:14px; }
+.player-name-icon{ font-size:11px; color:var(--text-dim); letter-spacing:.06em; }
 .player-name-box input{
   background:transparent; border:none; outline:none; color:var(--text);
   font-family:var(--font-body); font-size:13px; width:96px;
@@ -82,7 +82,11 @@ input{font-family:var(--font-mono);}
 .diff-card .lv{ font-family:var(--font-mono); font-size:11px; color:var(--gold); letter-spacing:.14em; }
 .diff-card h3{ font-size:22px; }
 .diff-card p{ color:var(--text-dim); font-size:13px; margin:0; line-height:1.6; }
-.diff-card .best{ font-family:var(--font-mono); font-size:11.5px; color:var(--emerald); border-top:1px solid var(--line); padding-top:10px; margin-top:auto; }
+.best-block{ margin-top:auto; border-top:1px solid var(--line); padding-top:10px; }
+.best-block-label{ font-family:var(--font-mono); font-size:10.5px; letter-spacing:.1em; color:var(--text-dim); margin-bottom:6px; }
+.best-btn-grid{ display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+.diff-card .best-btn{ margin-top:0; width:auto; background:var(--surface-2); border:1px solid var(--line); color:var(--text-dim); font-weight:500; font-size:12px; padding:8px 6px; border-radius:8px; }
+.diff-card .best-btn:hover{ color:var(--text); border-color:var(--gold); }
 .diff-card button{ margin-top:6px; width:100%; }
 .card-btn-row{ display:flex; gap:8px; margin-top:6px; }
 .card-btn-row button{ flex:1; margin-top:0; padding:11px 8px; font-size:12.5px; }
@@ -117,8 +121,10 @@ input{font-family:var(--font-mono);}
 .quiz-body.no-flag{ grid-template-columns:1fr; }
 
 .flag-box{ padding:14px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; }
-.flag-box img, .flag-box .flag-emoji{ width:auto; max-width:100%; height:auto; max-height:130px; object-fit:contain; border-radius:6px; border:1px solid var(--line); box-shadow:0 8px 20px rgba(0,0,0,.35); background:var(--surface-2); }
-.flag-box .flag-emoji{ display:flex; align-items:center; justify-content:center; font-size:44px; width:100px; height:75px; }
+.flag-box img{ width:auto; max-width:100%; height:auto; max-height:130px; object-fit:contain; border-radius:6px; border:1px solid var(--line); box-shadow:0 8px 20px rgba(0,0,0,.35); background:var(--surface-2); }
+.flag-fallback{ display:flex; align-items:center; justify-content:center; font-family:var(--font-mono); font-weight:700; letter-spacing:.08em; color:var(--text-dim); background:var(--surface-2); border:1px solid var(--line); border-radius:6px; width:100px; height:75px; font-size:22px; }
+.flag-fallback.small{ width:46px; height:34px; font-size:12px; border-radius:4px; flex-shrink:0; }
+.flag-quiz-box .flag-fallback{ width:220px; height:150px; font-size:40px; }
 
 .map-wrap{ position:relative; border:1px solid var(--line); border-radius:14px; overflow:hidden; background:var(--ocean); height:360px; }
 @media(min-width:720px){ .map-wrap{ height:420px; } }
@@ -182,7 +188,13 @@ input{font-family:var(--font-mono);}
 
 /* ---------- QUIT CONFIRM MODAL ---------- */
 .modal-backdrop{ position:fixed; inset:0; background:rgba(6,8,12,.7); display:flex; align-items:center; justify-content:center; z-index:1000; padding:20px; }
-.modal-card{ max-width:360px; width:100%; padding:26px 24px; text-align:center; }
+.modal-card{ max-width:400px; width:100%; padding:26px 24px; text-align:center; }
+.best-row{ text-align:left; padding:12px 14px; border:1px solid var(--line); border-radius:10px; margin-bottom:10px; background:var(--surface-2); }
+.best-row-label{ font-family:var(--font-mono); font-size:11px; color:var(--gold); letter-spacing:.1em; margin-bottom:4px; }
+.best-row-main{ font-family:var(--font-mono); font-size:24px; font-weight:700; }
+.best-row-main span{ font-size:13px; color:var(--text-dim); margin-left:2px; }
+.best-row-sub{ font-size:12px; color:var(--text-dim); margin-top:2px; }
+.best-row-empty{ font-size:13px; color:var(--text-dim); }
 .modal-card h3{ font-size:19px; margin-bottom:10px; }
 .modal-card p{ color:var(--text-dim); font-size:13.5px; line-height:1.6; margin:0 0 20px; }
 .modal-actions{ display:flex; gap:10px; justify-content:center; flex-wrap:wrap; }

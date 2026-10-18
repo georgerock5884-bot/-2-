@@ -295,6 +295,57 @@
   };
   COUNTRIES.forEach(c=>{ c.capitals = CAPITALS_BY_A3[c.a3] || []; });
 
+  /* ---- 地図の拡大表示用の細かい地域区分（クイズの大陸区分とは別） ---- */
+  const REGION_A3 = {
+    north_america:   "USA,CAN,MEX",
+    central_america: "GTM,BLZ,HND,SLV,NIC,CRI,PAN",
+    caribbean:       "CUB,JAM,HTI,DOM,BHS,TTO,BRB,LCA,GRD,VCT,ATG,KNA,DMA",
+    south_america:   "COL,VEN,ECU,PER,BOL,BRA,PRY,URY,ARG,CHL,GUY,SUR",
+    europe:          CONTINENT_A3.europe.join(","),
+    africa:          CONTINENT_A3.africa.join(","),
+    southern_africa: "ZAF,NAM,BWA,ZWE,ZMB,MWI,MOZ,AGO,LSO,SWZ,MDG",
+    west_asia:       "SAU,ARE,ISR,TUR,IRN,IRQ,SYR,JOR,LBN,YEM,OMN,KWT,QAT,BHR,ARM,AZE,GEO,CYP,PSE",
+    central_asia:    "KAZ,UZB,TKM,TJK,KGZ",
+    south_asia:      "IND,PAK,BGD,NPL,BTN,LKA,MDV,AFG",
+    southeast_asia:  "IDN,THA,VNM,PHL,MYS,SGP,MMR,KHM,LAO,BRN,TLS",
+    east_asia:       "JPN,CHN,KOR,PRK,TWN,MNG",
+    oceania:         CONTINENT_A3.oceania.join(",")
+  };
+  const A3_TO_REGION = {};
+  Object.keys(REGION_A3).forEach(r=>{
+    REGION_A3[r].split(",").forEach(a3=>{ A3_TO_REGION[a3] = r; });
+  });
+  COUNTRIES.forEach(c=>{ c.region = A3_TO_REGION[c.a3] || c.continent; });
+
+  const REGION_VIEW = {
+    north_america:   { bounds: [[13, -170], [75, -52]] },
+    central_america: { bounds: [[6.5, -93.5], [18.5, -76]] },
+    caribbean:       { bounds: [[9, -86], [27.8, -58]] },
+    south_america:   { bounds: [[-56, -82], [13, -34]] },
+    europe:          { bounds: [[34, -25], [71, 45]] },
+    africa:          { bounds: [[-36, -27], [38, 60]] },
+    southern_africa: { bounds: [[-35.5, 11], [-4, 52]] },
+    west_asia:       { bounds: [[11, 25], [44, 64]] },
+    central_asia:    { bounds: [[35, 46], [56, 88]] },
+    south_asia:      { bounds: [[-1, 59], [38, 98]] },
+    southeast_asia:  { bounds: [[-11, 92], [29, 141]] },
+    east_asia:       { bounds: [[17, 72], [54, 146]] },
+    oceania:         { bounds: [[-48, 110], [16, 212]] }
+  };
+
+  /* ---- 地図データに国が見つからない場合の予備座標（緯度,経度）。
+          太平洋の国は日付変更線をまたぐため、東経表記(+360)で持つ ---- */
+  const FALLBACK_POINTS = {
+    WSM:[-13.76,187.9], TON:[-21.18,184.8], TUV:[-8.52,179.2], NRU:[-0.52,166.93], MHL:[7.1,171.2],
+    PLW:[7.5,134.6], FSM:[6.9,158.2], KIR:[1.4,173.0], MDV:[3.2,73.2], SYC:[-4.62,55.45], COM:[-11.65,43.3],
+    STP:[0.19,6.61], CPV:[16.0,-24.0], MUS:[-20.3,57.55], BRB:[13.19,-59.54], LCA:[13.91,-60.98],
+    GRD:[12.12,-61.68], VCT:[13.25,-61.2], ATG:[17.06,-61.8], KNA:[17.33,-62.75], DMA:[15.42,-61.35],
+    MLT:[35.9,14.4], SGP:[1.35,103.82], BHR:[26.03,50.55], MCO:[43.74,7.42], SMR:[43.94,12.46],
+    VAT:[41.9,12.45], LIE:[47.16,9.55], AND:[42.55,1.58]
+  };
+
   global.WORLD_QUIZ_COUNTRIES = COUNTRIES;
   global.WORLD_QUIZ_CONTINENT_VIEW = CONTINENT_VIEW;
+  global.WORLD_QUIZ_REGION_VIEW = REGION_VIEW;
+  global.WORLD_QUIZ_FALLBACK_POINTS = FALLBACK_POINTS;
 })(window);

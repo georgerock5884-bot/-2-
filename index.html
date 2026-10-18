@@ -12,7 +12,7 @@
 </head>
 <body>
 <div id="playerNameBox" class="player-name-box">
-  <span class="player-name-icon">🧑</span>
+  <span class="player-name-icon">名前</span>
   <input id="playerNameInput" type="text" maxlength="16" placeholder="名前を入力" autocomplete="off" />
 </div>
 <div id="app"></div>
@@ -32,7 +32,8 @@ const AUTO_ADVANCE_MS_WRONG = 2400;
    3. 下の2行に貼り付ける（Private Codeは絶対に他人に教えないこと） */
 const DREAMLO_PRIVATE_CODE = "YOUR_PRIVATE_CODE";
 const DREAMLO_PUBLIC_CODE = "YOUR_PUBLIC_CODE";
-const CONTINENT_VIEW = window.WORLD_QUIZ_CONTINENT_VIEW || {};
+const REGION_VIEW = window.WORLD_QUIZ_REGION_VIEW || {};
+const FALLBACK_POINTS = window.WORLD_QUIZ_FALLBACK_POINTS || {};
 const MODES = {
   easy:          { label:"初級",         count:15,  filter:c=>c.tier===1 },
   medium:        { label:"中級",         count:40,  filter:c=>c.tier===2 },
@@ -68,7 +69,8 @@ const MAP_COLORS = {
 let ALL_COUNTRIES = window.WORLD_QUIZ_COUNTRIES || [];
 let GEO_LOAD_STATE = "idle"; // idle | loading | ready | error
 let GEO_DATA = null;
-let map = null, geoLayer = null, targetLayerRef = null;
+let map = null, geoLayer = null, shiftedLayer = null, targetLayerRef = null, targetMarker = null;
+let SHIFTED_FEATURES = [];
 
 let state = { screen:"title" };
 let quiz = null; // {difficulty, format, askCapital, answerMode, list, pool, index, results, streak, maxStreak, qStartTime, answered, showFlag}
@@ -105,7 +107,7 @@ function setTheme(t){
   THEME = t;
   try{ localStorage.setItem("wcq_theme", t); }catch(e){}
   document.documentElement.setAttribute("data-theme", t);
-  if(geoLayer){ geoLayer.eachLayer(l=>l.setStyle(baseStyle())); }
+  forEachMapLayer(l=>l.setStyle(baseStyle()));
   if(quiz && state.screen==="quiz" && GEO_LOAD_STATE==="ready"){ highlightAnswerOnMap(currentCountry()); }
   render();
 }
@@ -137,11 +139,6 @@ function normName(s){
     .toLowerCase()
     .replace(/[^a-z0-9]+/g," ")
     .trim();
-}
-function emojiFlag(iso2){
-  try{
-    return iso2.toUpperCase().replace(/./g, ch => String.fromCodePoint(127397 + ch.charCodeAt(0)));
-  }catch(e){ return "🏳️"; }
 }
 function shuffle(arr){
   const a = arr.slice();
@@ -180,15 +177,17 @@ function playCorrectSound(){ beep(520,880,0.25,"triangle"); }
 function playWrongSound(){ beep(220,110,0.32,"sawtooth"); }
 
 /* ==================== LOCAL BEST SCORES ==================== */
-function bestKey(diff, askCapital, answerMode){ return "wcq_best_"+diff+(askCapital?"_cap":"")+(answerMode==="choice4"?"_c4":""); }
-function getBest(diff, askCapital, answerMode){
-  try{ return JSON.parse(localStorage.getItem(bestKey(diff, askCapital, answerMode))||"null"); }catch(e){ return null; }
+function bestKey(diff, askCapital, format, answerMode){
+  return "wcq_best_"+diff+(askCapital?"_cap":"")+"_"+(format==="flag"?"flag":"map")+"_"+(answerMode==="choice4"?"c4":"ty");
 }
-function saveBestIfBetter(diff, askCapital, answerMode, summary){
-  const prev = getBest(diff, askCapital, answerMode);
+function getBest(diff, askCapital, format, answerMode){
+  try{ return JSON.parse(localStorage.getItem(bestKey(diff, askCapital, format, answerMode))||"null"); }catch(e){ return null; }
+}
+function saveBestIfBetter(diff, askCapital, format, answerMode, summary){
+  const prev = getBest(diff, askCapital, format, answerMode);
   let isNew = false;
   if(!prev || summary.accuracy > prev.accuracy || (summary.accuracy===prev.accuracy && summary.avgTime < prev.avgTime)){
-    try{ localStorage.setItem(bestKey(diff, askCapital, answerMode), JSON.stringify(summary)); }catch(e){}
+    try{ localStorage.setItem(bestKey(diff, askCapital, format, answerMode), JSON.stringify(summary)); }catch(e){}
     isNew = true;
   }
   return isNew;
@@ -231,6 +230,7 @@ function loadGeoData(){
       if(!data || !Array.isArray(data.features) || data.features.length===0) throw new Error("empty geojson");
       GEO_DATA = data;
       resolveCountryFeatures();
+      SHIFTED_FEATURES = buildShiftedPacificFeatures();
       GEO_LOAD_STATE = "ready";
     }catch(e){
       console.error("地図データの読み込みに失敗しました", e);
@@ -267,12 +267,12 @@ function resolveCountryFeatures(){
       }
     }
     c._feature = f || null;
-    if(!f) console.warn("地図データに一致する国が見つかりません（除外されます）:", c.ja, c.a3);
+    if(!f && !FALLBACK_POINTS[c.a3]) console.warn("地図データに一致する国が見つかりません（除外されます）:", c.ja, c.a3);
   });
 }
 
 function playableCountries(){
-  return ALL_COUNTRIES.filter(c=>c._feature);
+  return ALL_COUNTRIES.filter(c=>c._feature || FALLBACK_POINTS[c.a3]);
 }
 
 /* ==================== QUIZ SETUP ==================== */
@@ -358,7 +358,7 @@ function updateHintDisplay(){
   el.textContent = quiz.hintsUsed>0 ? shown : "";
   const remaining = Math.max(0, max - quiz.hintsUsed);
   btn.disabled = quiz.answered || remaining<=0;
-  btn.textContent = `💡 ヒント（-${HINT_PENALTY}pt）残り${remaining}回`;
+  btn.textContent = `ヒント（-${HINT_PENALTY}pt）残り${remaining}回`;
 }
 
 /* ==================== ANSWERING ==================== */
@@ -431,7 +431,7 @@ function showFeedback(correct, c, elapsed, points){
   const subLabel = quiz.askCapital ? `（${c.ja}の首都）` : "";
   const pointsLabel = correct ? `　獲得ポイント: +${points}pt` : "";
   panel.innerHTML = `
-    <img src="https://flagcdn.com/w160/${c.a2}.png" onerror="this.replaceWith(flagEmojiEl('${c.a2}', true))" alt="${c.ja}の国旗">
+    <img src="https://flagcdn.com/w160/${c.a2}.png" onerror="this.replaceWith(flagFallbackEl('${c.a2}', true))" alt="${c.ja}の国旗">
     <div class="txt">
       <b>${correct ? "正解！" : "不正解"} — ${correctAnswerLabel}${subLabel}</b>
       <div>回答タイム: ${fmtTime(elapsed)}${pointsLabel}${correct ? "" : "　正解は「"+correctAnswerLabel+"」でした"}</div>
@@ -450,18 +450,13 @@ function scheduleAutoAdvance(correct){
   }, delay);
 }
 
-function flagEmojiEl(a2, small){
+function flagFallbackEl(a2, small){
   const span = document.createElement("span");
-  span.className = "flag-emoji";
-  if(small){
-    span.style.width="46px"; span.style.height="34px"; span.style.fontSize="22px";
-    span.style.display="flex"; span.style.alignItems="center"; span.style.justifyContent="center";
-    span.style.borderRadius="4px"; span.style.background="var(--surface-2)"; span.style.flexShrink="0";
-  }
-  span.textContent = emojiFlag(a2);
+  span.className = "flag-fallback" + (small ? " small" : "");
+  span.textContent = (a2||"").toUpperCase();
   return span;
 }
-window.flagEmojiEl = flagEmojiEl;
+window.flagFallbackEl = flagFallbackEl;
 
 function nextQuestion(){
   if(quiz.index < quiz.list.length - 1){
@@ -491,7 +486,7 @@ function finishQuiz(){
     correctCount, total, accuracy, avgTime, bestTime, totalTime, totalScore,
     date: new Date().toISOString()
   };
-  const isNewBest = saveBestIfBetter(quiz.difficulty, quiz.askCapital, quiz.answerMode, summary);
+  const isNewBest = saveBestIfBetter(quiz.difficulty, quiz.askCapital, quiz.format, quiz.answerMode, summary);
   const isNewStreak = saveMaxStreak(quiz.maxStreak);
   updateLifetimeStats(summary);
 
@@ -575,16 +570,56 @@ function confirmQuit(){
 }
 
 /* ==================== MAP ==================== */
+function forEachMapLayer(fn){
+  if(geoLayer) geoLayer.eachLayer(fn);
+  if(shiftedLayer) shiftedLayer.eachLayer(fn);
+}
+
+// 日付変更線の東側（西経表記）にある太平洋の島々（サモア・トンガなど）は、そのままだと
+// オセアニア表示の東端に出てこない。+360度ずらしたコピーを別レイヤーとして描いて見えるようにする。
+function buildShiftedPacificFeatures(){
+  const out = [];
+  GEO_DATA.features.forEach(f=>{
+    const g = f.geometry;
+    if(!g) return;
+    let polys;
+    if(g.type==="Polygon") polys = [g.coordinates];
+    else if(g.type==="MultiPolygon") polys = g.coordinates;
+    else return;
+    const shifted = [];
+    polys.forEach(poly=>{
+      const ring = poly[0];
+      if(!ring || !ring.length) return;
+      let maxLng=-Infinity, minLat=Infinity, maxLat=-Infinity;
+      for(let i=0;i<ring.length;i++){
+        const x = ring[i][0], y = ring[i][1];
+        if(x>maxLng) maxLng=x;
+        if(y<minLat) minLat=y;
+        if(y>maxLat) maxLat=y;
+      }
+      if(maxLng <= -140 && minLat >= -60 && maxLat <= 35){
+        shifted.push(poly.map(r=>r.map(pt=>[pt[0]+360, pt[1]])));
+      }
+    });
+    if(shifted.length){
+      out.push({ type:"Feature", properties:f.properties, geometry:{ type:"MultiPolygon", coordinates:shifted }, _orig:f });
+    }
+  });
+  return out;
+}
+
 function ensureMap(){
   const container = document.getElementById("map");
   if(!container) return;
   if(map){ map.remove(); map = null; }
+  geoLayer = null; shiftedLayer = null; targetMarker = null;
   map = L.map("map", {
     zoomControl:false,
     attributionControl:false,
-    minZoom:1, maxZoom:7,
+    minZoom:1, maxZoom:8,
+    zoomSnap:0.1, zoomDelta:0.5,
     worldCopyJump:false,
-    maxBounds:[[-95,-200],[95,200]]
+    maxBounds:[[-95,-210],[95,430]]
   });
   L.control.zoom({position:"bottomright"}).addTo(map);
 
@@ -593,10 +628,18 @@ function ensureMap(){
     onEachFeature: (feature, layer)=>{ layer._wcqFeature = feature; }
   }).addTo(map);
 
+  if(SHIFTED_FEATURES.length){
+    shiftedLayer = L.geoJSON(SHIFTED_FEATURES, {
+      style: baseStyle,
+      interactive:false,
+      onEachFeature: (feature, layer)=>{ layer._wcqFeature = feature._orig; }
+    }).addTo(map);
+  }
+
   try{
-    map.fitBounds(geoLayer.getBounds(), { padding:[6,6] });
+    map.fitBounds([[-58,-180],[80,180]], { padding:[6,6], animate:false });
   }catch(e){
-    map.setView([15,10], 2);
+    map.setView([15,10], 2, { animate:false });
   }
 }
 
@@ -604,15 +647,14 @@ const COUNTRY_VIEW_OVERRIDE = {
   // ロシアは大陸区分上ヨーロッパ寄りだが国土が東西に非常に広いため専用の表示範囲を使う
   RUS: { bounds: [[41, 19], [82, 180]] }
 };
-function zoomToContinent(country){
+function zoomToRegion(country){
   if(!map) return;
   const override = country && COUNTRY_VIEW_OVERRIDE[country.a3];
-  const continent = country ? country.continent : null;
-  const v = override || CONTINENT_VIEW[continent];
-  if(!v){ try{ map.fitBounds(geoLayer.getBounds(), { padding:[6,6] }); }catch(e){} return; }
+  const v = override || (country && (REGION_VIEW[country.region] || REGION_VIEW[country.continent]));
   try{
-    if(v.bounds) map.fitBounds(v.bounds, { padding:[16,16] });
-    else if(v.center) map.setView(v.center, v.zoom || 3);
+    if(v && v.bounds) map.fitBounds(v.bounds, { padding:[10,10], animate:false });
+    else if(v && v.center) map.setView(v.center, v.zoom || 3, { animate:false });
+    else map.fitBounds([[-58,-180],[80,180]], { padding:[6,6], animate:false });
   }catch(e){}
 }
 
@@ -625,72 +667,172 @@ function targetStyle(){
   return { color:m.targetColor, weight:1.6, fillColor:m.targetFill, fillOpacity:0.92 };
 }
 
-let smallCountryRing = null;
+// 現在の表示倍率で、国全体の見た目の面積（px^2）がこの値より小さければ「小さい国」として丸で囲む
+const SMALL_COUNTRY_AREA_PX = 2000;
+
+function outerRingsOf(layer){
+  const ll = layer.getLatLngs();
+  const rings = [];
+  if(!ll || !ll.length) return rings;
+  const isMulti = Array.isArray(ll[0]) && Array.isArray(ll[0][0]);
+  if(isMulti){ ll.forEach(poly=>{ if(poly && poly[0]) rings.push(poly[0]); }); }
+  else if(ll[0]) rings.push(ll[0]);
+  return rings;
+}
+function ringBounds(ring){
+  let minLat=90, maxLat=-90, minLng=1e9, maxLng=-1e9;
+  for(let i=0;i<ring.length;i++){
+    const p = ring[i];
+    if(p.lat<minLat) minLat=p.lat;
+    if(p.lat>maxLat) maxLat=p.lat;
+    if(p.lng<minLng) minLng=p.lng;
+    if(p.lng>maxLng) maxLng=p.lng;
+  }
+  return L.latLngBounds([minLat,minLng],[maxLat,maxLng]);
+}
+function clearTargetMarker(){
+  if(targetMarker && map){ map.removeLayer(targetMarker); }
+  targetMarker = null;
+}
+function placeTargetMarker(latlng, filled){
+  const m = MAP_COLORS[THEME] || MAP_COLORS.dark;
+  const layers = [];
+  if(filled){
+    layers.push(L.circleMarker(latlng, {
+      radius:6, color:m.targetColor, weight:1.5, fillColor:m.targetFill, fillOpacity:1,
+      className:"country-target", interactive:false
+    }));
+  }
+  layers.push(L.circleMarker(latlng, {
+    radius:26, color:m.targetColor, weight:2, fill:false,
+    dashArray:"4 5", className:"small-country-ring", interactive:false
+  }));
+  targetMarker = L.layerGroup(layers).addTo(map);
+}
+
 function highlightAnswerOnMap(country){
-  if(!geoLayer) return;
-  geoLayer.eachLayer(l=>{
+  if(!geoLayer || !map) return;
+  const feature = country && country._feature;
+  const matches = [];
+  forEachMapLayer(l=>{
     l.setStyle(baseStyle());
     if(l._path) l._path.classList.remove("country-target");
+    if(feature && l._wcqFeature === feature) matches.push(l);
   });
-  if(smallCountryRing){ map.removeLayer(smallCountryRing); smallCountryRing = null; }
+  clearTargetMarker();
 
-  const feature = country._feature;
-  if(!feature) return;
-  geoLayer.eachLayer(l=>{
-    if(l._wcqFeature === feature){
-      l.setStyle(targetStyle());
-      l.bringToFront();
-      if(l._path) l._path.classList.add("country-target");
-      targetLayerRef = l;
-      try{
-        const b = l.getBounds();
-        const latSpan = b.getNorth() - b.getSouth();
-        const lngSpan = b.getEast() - b.getWest();
-        if(Math.max(latSpan, lngSpan) < 3){
-          const m = MAP_COLORS[THEME] || MAP_COLORS.dark;
-          smallCountryRing = L.circleMarker(b.getCenter(), {
-            radius: 26, color: m.targetColor, weight:2, fill:false,
-            dashArray:"4 5", className:"small-country-ring", interactive:false
-          }).addTo(map);
-        }
-      }catch(e){}
-    }
+  matches.forEach(l=>{
+    l.setStyle(targetStyle());
+    l.bringToFront();
+    if(l._path) l._path.classList.add("country-target");
+    targetLayerRef = l;
   });
+
+  // 表示中の範囲にある国土の面積合計と、いちばん大きい国土の位置を求める
+  let total = 0, best = null;
+  const view = map.getBounds();
+  matches.forEach(l=>{
+    outerRingsOf(l).forEach(ring=>{
+      if(!ring.length) return;
+      const b = ringBounds(ring);
+      const sw = map.latLngToContainerPoint(b.getSouthWest());
+      const ne = map.latLngToContainerPoint(b.getNorthEast());
+      const area = Math.abs(ne.x - sw.x) * Math.abs(sw.y - ne.y);
+      total += area;
+      const c = b.getCenter();
+      if(view.contains(c) && (!best || area > best.area)) best = { c, area };
+    });
+  });
+
+  const fp = country && FALLBACK_POINTS[country.a3];
+  if(!best){
+    // 地図データに形が無い、または表示範囲に入っていない場合は予備座標に印を出す
+    if(fp) placeTargetMarker(L.latLng(fp[0], fp[1]), true);
+  }else if(total < SMALL_COUNTRY_AREA_PX){
+    placeTargetMarker(best.c, false);
+  }
 }
 
 function recenterMap(){
   if(!map || !quiz) return;
-  zoomToContinent(currentCountry());
+  zoomToRegion(currentCountry());
 }
 
 /* ==================== RENDER ==================== */
+function bestButtonsHtml(modeKey){
+  const combos = [
+    ["map","choice4","地図 4択"],
+    ["map","typing","地図 タイピング"],
+    ["flag","choice4","国旗 4択"],
+    ["flag","typing","国旗 タイピング"]
+  ];
+  return `
+    <div class="best-block">
+      <div class="best-block-label">自己ベストを見る</div>
+      <div class="best-btn-grid">
+        ${combos.map(([f,a,label])=>`<button class="best-btn" onclick="openBestModal('${modeKey}','${f}','${a}')">${label}</button>`).join("")}
+      </div>
+    </div>`;
+}
+
 function formatButtonsHtml(modeKey){
   const cap = QUIZ_TYPE_PREF === "capital";
   const mapCnt = modeQuestionCount(modeKey, cap, "map");
   const flagCnt = modeQuestionCount(modeKey, cap, "flag");
   return `
     <div class="card-btn-row">
-      <button class="btn btn-gold" onclick="handleStart('${modeKey}','map')">🗺️ 地図（${mapCnt}問）</button>
-      <button class="btn btn-primary" onclick="handleStart('${modeKey}','flag')">🚩 国旗（${flagCnt}問）</button>
+      <button class="btn btn-gold" onclick="handleStart('${modeKey}','map')">地図クイズ（${mapCnt}問）</button>
+      <button class="btn btn-primary" onclick="handleStart('${modeKey}','flag')">国旗クイズ（${flagCnt}問）</button>
     </div>`;
+}
+
+function openBestModal(modeKey, format, answerMode){
+  state = { ...state, bestModal:{ modeKey, format, answerMode } };
+  render();
+}
+function closeBestModal(){
+  state = { ...state, bestModal:null };
+  render();
+}
+function renderBestModal(){
+  const m = state.bestModal;
+  if(!m) return "";
+  const title = `${MODES[m.modeKey].label}・${m.format==="map" ? "地図" : "国旗"}・${m.answerMode==="choice4" ? "4択" : "タイピング"}`;
+  const row = (askCapital)=>{
+    const label = askCapital ? "首都クイズ" : "国名クイズ";
+    const b = getBest(m.modeKey, askCapital, m.format, m.answerMode);
+    if(!b) return `<div class="best-row"><div class="best-row-label">${label}</div><div class="best-row-empty">まだ記録がありません</div></div>`;
+    const d = b.date ? new Date(b.date) : null;
+    const dateStr = d && !isNaN(d) ? `${d.getFullYear()}/${d.getMonth()+1}/${d.getDate()}` : "";
+    return `<div class="best-row">
+      <div class="best-row-label">${label}</div>
+      <div class="best-row-main">${b.totalScore||0}<span>pt</span></div>
+      <div class="best-row-sub">正答率 ${b.accuracy.toFixed(0)}%（${b.correctCount}/${b.total}）・平均 ${b.avgTime.toFixed(2)}秒${dateStr ? "・"+dateStr : ""}</div>
+    </div>`;
+  };
+  return `
+  <div class="modal-backdrop" onclick="closeBestModal()">
+    <div class="card modal-card" onclick="event.stopPropagation()">
+      <h3>自己ベスト</h3>
+      <p>${title}</p>
+      ${row(false)}
+      ${row(true)}
+      <div class="modal-actions"><button class="btn btn-ghost" onclick="closeBestModal()">閉じる</button></div>
+    </div>
+  </div>`;
 }
 
 function renderTitle(){
   const cap = QUIZ_TYPE_PREF === "capital";
   const am = ANSWER_MODE_PREF;
-  const easyBest = getBest("easy", cap, am), medBest = getBest("medium", cap, am), advBest = getBest("advanced", cap, am);
-  const bestLine = (b)=> b ? `自己ベスト: 正答率${b.accuracy.toFixed(0)}% ／ 平均${b.avgTime.toFixed(2)}秒 ／ ${b.totalScore||0}pt` : "まだ記録がありません";
 
-  const continentCards = CONTINENT_MODE_KEYS.map(key=>{
-    const best = getBest(key, cap, am);
-    return `
+  const continentCards = CONTINENT_MODE_KEYS.map(key=>`
     <div class="card diff-card continent-card">
       <h3>${MODES[key].label}</h3>
       <p>その大陸の国を重複なしで出題。</p>
-      <div class="best">${bestLine(best)}</div>
+      ${bestButtonsHtml(key)}
       ${formatButtonsHtml(key)}
-    </div>`;
-  }).join("");
+    </div>`).join("");
 
   return `
   <div class="hero">
@@ -706,14 +848,14 @@ function renderTitle(){
   </div>
   <div class="type-toggle-row">
     <div class="type-toggle">
-      <button class="${am==='typing'?"active":""}" onclick="setAnswerModePref('typing'); render()">✍️ タイピング</button>
-      <button class="${am==='choice4'?"active":""}" onclick="setAnswerModePref('choice4'); render()">🔘 4択（獲得ポイント半分）</button>
+      <button class="${am==='typing'?"active":""}" onclick="setAnswerModePref('typing'); render()">タイピング</button>
+      <button class="${am==='choice4'?"active":""}" onclick="setAnswerModePref('choice4'); render()">4択（獲得ポイント半分）</button>
     </div>
   </div>
   <div class="type-toggle-row">
     <div class="type-toggle">
-      <button class="${THEME==='dark'?"active":""}" onclick="setTheme('dark')">🌙 ダーク</button>
-      <button class="${THEME==='light'?"active":""}" onclick="setTheme('light')">☀️ ライト</button>
+      <button class="${THEME==='dark'?"active":""}" onclick="setTheme('dark')">ダーク</button>
+      <button class="${THEME==='light'?"active":""}" onclick="setTheme('light')">ライト</button>
     </div>
   </div>
   <div class="flag-toggle-row">
@@ -721,34 +863,35 @@ function renderTitle(){
       <input type="checkbox" id="flagPrefCheckbox" ${FLAG_PREF ? "checked" : ""} onchange="setFlagPref(this.checked); render()">
       <span>地図クイズで国旗も表示する</span>
     </label>
-    <button class="btn btn-ghost" onclick="go({screen:'mypage'})">📊 マイページ</button>
+    <button class="btn btn-ghost" onclick="go({screen:'mypage'})">マイページ</button>
   </div>
   <div class="diff-grid">
     <div class="card diff-card">
       <div class="lv">LEVEL 01</div>
       <h3>初級</h3>
       <p>誰もが知る有名な国が中心。15問でウォームアップ。</p>
-      <div class="best">${bestLine(easyBest)}</div>
+      ${bestButtonsHtml("easy")}
       ${formatButtonsHtml("easy")}
     </div>
     <div class="card diff-card">
       <div class="lv">LEVEL 02</div>
       <h3>中級</h3>
       <p>世界地理をある程度知っていないと厳しい40問。</p>
-      <div class="best">${bestLine(medBest)}</div>
+      ${bestButtonsHtml("medium")}
       ${formatButtonsHtml("medium")}
     </div>
     <div class="card diff-card">
       <div class="lv">LEVEL 03</div>
       <h3>上級</h3>
       <p>すべての国を重複なしで出題。真の実力者向け。</p>
-      <div class="best">${bestLine(advBest)}</div>
+      ${bestButtonsHtml("advanced")}
       ${formatButtonsHtml("advanced")}
     </div>
   </div>
   <p class="eyebrow" style="margin-top:34px;">CONTINENT CHALLENGE — 大陸別クイズ</p>
   <div class="diff-grid continent-grid">${continentCards}</div>
   <footer class="note">地図データ: Natural Earth / datasets.io ・ 国旗: flagcdn.com${cap ? "・ 首都は複数首都を持つ国はいずれか一つの回答で正解になります" : ""}</footer>
+  ${renderBestModal()}
   `;
 }
 
@@ -757,7 +900,6 @@ function renderLoading(){
 }
 function renderError(){
   return `<div class="center-msg">
-    <div style="font-size:36px;">🗺️</div>
     <div>地図データの読み込みに失敗しました。<br>ネットワーク接続を確認してもう一度お試しください。</div>
     <button class="btn btn-gold" onclick="loadGeoData()">再読み込み</button>
     <button class="btn btn-ghost" onclick="pendingDifficulty=null; pendingFormat=null; go({screen:'title'})">タイトルに戻る</button>
@@ -785,7 +927,7 @@ function renderQuiz(){
     + (quiz.askCapital ? "・首都" : "")
     + (quiz.format==="flag" ? "・国旗" : "・地図")
     + (isChoice ? "・4択" : "");
-  const flagToggleLabel = quiz.showFlag ? "🚩 国旗を隠す" : "🚩 国旗を表示";
+  const flagToggleLabel = quiz.showFlag ? "国旗を隠す" : "国旗を表示";
   const placeholder = quiz.askCapital ? "首都名を入力（例：東京）" : "国名を入力（例：日本）";
 
   const answerAreaHtml = isChoice ? `
@@ -798,7 +940,7 @@ function renderQuiz(){
       <button class="btn btn-primary" id="answerBtn" onclick="checkAnswer()">回答</button>
     </div>
     <div class="hint-row">
-      <button class="btn-ghost" id="hintBtn" onclick="useHint()">💡 ヒント（-${HINT_PENALTY}pt）</button>
+      <button class="btn-ghost" id="hintBtn" onclick="useHint()">ヒント（-${HINT_PENALTY}pt）</button>
       <span id="hintDisplay" class="hint-display"></span>
     </div>
   `;
@@ -807,12 +949,12 @@ function renderQuiz(){
   <div class="quiz-body ${quiz.showFlag ? "" : "no-flag"}">
     ${quiz.showFlag ? `
     <div class="card flag-box">
-      <img src="https://flagcdn.com/w320/${c.a2}.png" onerror="this.replaceWith(flagEmojiEl('${c.a2}'))" alt="国旗">
+      <img src="https://flagcdn.com/w320/${c.a2}.png" onerror="this.replaceWith(flagFallbackEl('${c.a2}'))" alt="国旗">
     </div>` : ``}
     <div class="card" style="padding:12px;">
       <div class="map-wrap">
         <div id="map"></div>
-        <button class="recenter-btn" onclick="recenterMap()">🧭 表示を戻す</button>
+        <button class="recenter-btn" onclick="recenterMap()">表示を戻す</button>
       </div>
       ${answerAreaHtml}
       <div id="feedback" class="feedback-panel"></div>
@@ -820,7 +962,7 @@ function renderQuiz(){
   </div>
   ` : `
   <div class="card flag-quiz-box">
-    <img class="flag-quiz-img" src="https://flagcdn.com/w640/${c.a2}.png" onerror="this.replaceWith(flagEmojiEl('${c.a2}'))" alt="国旗">
+    <img class="flag-quiz-img" src="https://flagcdn.com/w640/${c.a2}.png" onerror="this.replaceWith(flagFallbackEl('${c.a2}'))" alt="国旗">
     ${answerAreaHtml}
     <div id="feedback" class="feedback-panel"></div>
   </div>
@@ -829,7 +971,7 @@ function renderQuiz(){
   return `
   <div class="quiz-head">
     <div class="quiz-head-left">
-      <button class="btn-danger-ghost" onclick="requestQuit()">✕ 中断する</button>
+      <button class="btn-danger-ghost" onclick="requestQuit()">中断する</button>
       <div class="qcount">${diffLabel} ・ QUESTION <b>${quiz.index+1}</b> / ${quiz.list.length}</div>
     </div>
     <div class="stat-pill">
@@ -877,7 +1019,7 @@ function renderResult(){
     </div>
     <div class="result-actions">
       <button class="btn btn-gold" onclick="handleStart('${quiz.difficulty}','${quiz.format}')">もう一度プレイ</button>
-      <button class="btn btn-primary" onclick="showRanking()">🏆 ランキングを見る</button>
+      <button class="btn btn-primary" onclick="showRanking()">ランキングを見る</button>
       <button class="btn btn-ghost" onclick="go({screen:'title'})">難易度選択に戻る</button>
     </div>
   </div>
@@ -937,7 +1079,7 @@ function renderRanking(){
   return `
   <div class="result">
     <p class="eyebrow">RANKING — ${label}</p>
-    <h2>🏆 ランキング</h2>
+    <h2>ランキング</h2>
   </div>
   ${body}
   <div class="result-actions">
@@ -969,7 +1111,7 @@ function render(){
   if(state.screen==="quiz" && quiz){
     if(quiz.format==="map" && GEO_LOAD_STATE==="ready"){
       ensureMap();
-      zoomToContinent(currentCountry());
+      zoomToRegion(currentCountry());
       highlightAnswerOnMap(currentCountry());
     }
     if(quiz.answerMode==="typing"){
