@@ -18,7 +18,9 @@
 <div id="app"></div>
 
 <script src="countries-data.js"></script>
+<script src="country-info.js"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="modes.js"></script>
 <script>
 /* ==================== CONFIG ==================== */
 const GEOJSON_URL = "https://raw.githubusercontent.com/datasets/geo-countries/main/data/countries.geojson";
@@ -71,6 +73,9 @@ let GEO_LOAD_STATE = "idle"; // idle | loading | ready | error
 let GEO_DATA = null;
 let map = null, geoLayer = null, shiftedLayer = null, targetLayerRef = null, targetMarker = null;
 let SHIFTED_FEATURES = [];
+let layersByFeature = new Map();
+let featureToCountry = new Map();
+let pendingResume = false;
 
 let state = { screen:"title" };
 let quiz = null; // {difficulty, format, askCapital, answerMode, list, pool, index, results, streak, maxStreak, qStartTime, answered, showFlag}
@@ -237,7 +242,10 @@ function loadGeoData(){
       GEO_LOAD_STATE = "error";
     }
     geoFetchPromise = null;
-    if(GEO_LOAD_STATE==="ready" && pendingDifficulty){
+    if(GEO_LOAD_STATE==="ready" && pendingResume){
+      pendingResume = false;
+      resumeSavedQuiz();
+    }else if(GEO_LOAD_STATE==="ready" && pendingDifficulty){
       const d = pendingDifficulty, f = pendingFormat || "map";
       pendingDifficulty = null; pendingFormat = null;
       startQuiz(d, f);
@@ -250,6 +258,7 @@ function loadGeoData(){
 
 function resolveCountryFeatures(){
   const byA3 = {}, byName = {};
+  featureToCountry = new Map();
   GEO_DATA.features.forEach(f=>{
     const p = f.properties || {};
     const a3 = p["ISO3166-1-Alpha-3"];
@@ -267,6 +276,7 @@ function resolveCountryFeatures(){
       }
     }
     c._feature = f || null;
+    if(f) featureToCountry.set(f, c);
     if(!f && !FALLBACK_POINTS[c.a3]) console.warn("地図データに一致する国が見つかりません（除外されます）:", c.ja, c.a3);
   });
 }
@@ -338,7 +348,7 @@ function maxHintsFor(c){
   return Math.max(0, Array.from(target).length - 1);
 }
 function useHint(){
-  if(!quiz || quiz.answered || quiz.answerMode==="choice4") return;
+  if(!quiz || quiz.answered || quiz.paused || quiz.answerMode==="choice4") return;
   const c = currentCountry();
   const max = maxHintsFor(c);
   if(quiz.hintsUsed >= max) return;
@@ -372,7 +382,7 @@ function markChoiceButtons(selectedValue){
 }
 
 function checkAnswer(selectedValue){
-  if(!quiz || quiz.answered) return;
+  if(!quiz || quiz.answered || quiz.paused) return;
   const isChoice = quiz.answerMode === "choice4";
   let raw;
   if(isChoice){
@@ -446,7 +456,7 @@ function scheduleAutoAdvance(correct){
   const delay = correct ? AUTO_ADVANCE_MS_CORRECT : AUTO_ADVANCE_MS_WRONG;
   autoAdvanceHandle = setTimeout(()=>{
     autoAdvanceHandle = null;
-    if(quiz && quiz.answered && state.screen==="quiz"){ nextQuestion(); }
+    if(quiz && quiz.answered && !quiz.paused && state.screen==="quiz"){ nextQuestion(); }
   }, delay);
 }
 
@@ -554,21 +564,6 @@ async function showRanking(){
   }
 }
 
-/* ==================== QUIT / ABORT ==================== */
-function requestQuit(){
-  if(autoAdvanceHandle){ clearTimeout(autoAdvanceHandle); autoAdvanceHandle = null; }
-  go({ screen:"quiz", showQuitModal:true });
-}
-function cancelQuit(){
-  go({ showQuitModal:false });
-}
-function confirmQuit(){
-  quiz = null;
-  pendingDifficulty = null;
-  pendingFormat = null;
-  go({ screen:"title", showQuitModal:false });
-}
-
 /* ==================== MAP ==================== */
 function forEachMapLayer(fn){
   if(geoLayer) geoLayer.eachLayer(fn);
@@ -608,11 +603,12 @@ function buildShiftedPacificFeatures(){
   return out;
 }
 
-function ensureMap(){
+function ensureMap(clickHandler){
   const container = document.getElementById("map");
   if(!container) return;
   if(map){ map.remove(); map = null; }
   geoLayer = null; shiftedLayer = null; targetMarker = null;
+  layersByFeature = new Map();
   map = L.map("map", {
     zoomControl:false,
     attributionControl:false,
@@ -625,14 +621,19 @@ function ensureMap(){
 
   geoLayer = L.geoJSON(GEO_DATA, {
     style: baseStyle,
-    onEachFeature: (feature, layer)=>{ layer._wcqFeature = feature; }
+    interactive: !!clickHandler,
+    onEachFeature: (feature, layer)=>{
+      layer._wcqFeature = feature;
+      registerLayer(feature, layer);
+      if(clickHandler) layer.on("click", ()=>clickHandler(feature));
+    }
   }).addTo(map);
 
   if(SHIFTED_FEATURES.length){
     shiftedLayer = L.geoJSON(SHIFTED_FEATURES, {
       style: baseStyle,
       interactive:false,
-      onEachFeature: (feature, layer)=>{ layer._wcqFeature = feature._orig; }
+      onEachFeature: (feature, layer)=>{ layer._wcqFeature = feature._orig; registerLayer(feature._orig, layer); }
     }).addTo(map);
   }
 
@@ -840,6 +841,7 @@ function renderTitle(){
     <h1>WORLD COUNTRY <span>QUIZ</span></h1>
     <p>世界地図から国を当てよう。地図の赤いハイライトか、国旗だけが手がかりです。</p>
   </div>
+  ${savedBannerHtml()}
   <div class="type-toggle-row">
     <div class="type-toggle">
       <button class="${!cap?"active":""}" onclick="setQuizTypePref('country'); render()">国名を当てる</button>
@@ -865,6 +867,8 @@ function renderTitle(){
     </label>
     <button class="btn btn-ghost" onclick="go({screen:'mypage'})">マイページ</button>
   </div>
+  ${toolsCardsHtml()}
+  <p class="eyebrow" style="margin-top:34px;">QUIZ — クイズ</p>
   <div class="diff-grid">
     <div class="card diff-card">
       <div class="lv">LEVEL 01</div>
@@ -902,21 +906,7 @@ function renderError(){
   return `<div class="center-msg">
     <div>地図データの読み込みに失敗しました。<br>ネットワーク接続を確認してもう一度お試しください。</div>
     <button class="btn btn-gold" onclick="loadGeoData()">再読み込み</button>
-    <button class="btn btn-ghost" onclick="pendingDifficulty=null; pendingFormat=null; go({screen:'title'})">タイトルに戻る</button>
-  </div>`;
-}
-
-function renderQuitModal(){
-  return `
-  <div class="modal-backdrop">
-    <div class="card modal-card">
-      <h3>クイズを中断しますか？</h3>
-      <p>ここまでの記録は保存されず、タイトル画面に戻ります。</p>
-      <div class="modal-actions">
-        <button class="btn btn-ghost" onclick="cancelQuit()">続ける</button>
-        <button class="btn btn-primary" onclick="confirmQuit()">中断する</button>
-      </div>
-    </div>
+    <button class="btn btn-ghost" onclick="pendingDifficulty=null; pendingFormat=null; pendingResume=false; go({screen:'title'})">タイトルに戻る</button>
   </div>`;
 }
 
@@ -971,7 +961,7 @@ function renderQuiz(){
   return `
   <div class="quiz-head">
     <div class="quiz-head-left">
-      <button class="btn-danger-ghost" onclick="requestQuit()">中断する</button>
+      <button class="btn-ghost small-btn" onclick="pauseQuiz()">一時停止</button>
       <div class="qcount">${diffLabel} ・ QUESTION <b>${quiz.index+1}</b> / ${quiz.list.length}</div>
     </div>
     <div class="stat-pill">
@@ -981,7 +971,6 @@ function renderQuiz(){
     </div>
   </div>
   ${questionVisual}
-  ${state.showQuitModal ? renderQuitModal() : ""}
   `;
 }
 
@@ -1043,6 +1032,7 @@ function renderMyPage(){
     <div class="card stat-cell"><div class="lbl">全問題の平均時間</div><div class="val">${avg.toFixed(2)}秒</div></div>
     <div class="card stat-cell"><div class="lbl">挑戦した問題数</div><div class="val">${s.totalQuestions}問</div></div>
   </div>
+  ${allcMypageHtml()}
   <div class="result-actions">
     <button class="btn btn-ghost" onclick="go({screen:'title'})">タイトルに戻る</button>
   </div>
@@ -1092,6 +1082,8 @@ function renderRanking(){
 function render(){
   const app = document.getElementById("app");
   let html = "";
+  if(state.screen==="allc" && !allc) state.screen = "title";
+  if(state.screen==="allresult" && !state.allSummary) state.screen = "title";
   if(state.screen==="title") html = renderTitle();
   else if(state.screen==="quiz"){
     if(quiz && quiz.format==="flag"){
@@ -1104,9 +1096,16 @@ function render(){
   else if(state.screen==="result") html = renderResult();
   else if(state.screen==="ranking") html = renderRanking();
   else if(state.screen==="mypage") html = renderMyPage();
+  else if(state.screen==="explore") html = mapScreenGate(renderExplore);
+  else if(state.screen==="allc") html = mapScreenGate(renderAllc);
+  else if(state.screen==="allresult") html = renderAllResult();
   else html = renderLoading();
 
   app.innerHTML = html;
+
+  if(state.screen!=="allc") stopAllcTimer();
+  if(state.screen==="explore" && GEO_LOAD_STATE==="ready") setupExplore();
+  if(state.screen==="allc" && allc && GEO_LOAD_STATE==="ready") setupAllc();
 
   if(state.screen==="quiz" && quiz){
     if(quiz.format==="map" && GEO_LOAD_STATE==="ready"){

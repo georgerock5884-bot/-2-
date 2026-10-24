@@ -246,3 +246,85 @@ footer.note{ text-align:center; color:var(--text-dim); font-size:11px; margin-to
 [data-theme="light"] .spinner{ border-color:var(--line); border-top-color:var(--gold); }
 [data-theme="light"] .btn-primary{ color:#fff8f5; }
 [data-theme="light"] .btn-gold{ color:#2a2109; }
+
+/* ---------- 追加: 一時停止 / 保存バナー ---------- */
+.small-btn{ padding:8px 14px !important; font-size:12.5px !important; }
+.pause-cover{ position:fixed; inset:0; z-index:900; background:var(--bg); display:flex; align-items:center; justify-content:center; padding:20px; }
+.pause-card{ max-width:420px; width:100%; padding:30px 26px; text-align:center; }
+.pause-card h3{ font-size:24px; margin-bottom:10px; }
+.pause-card p{ color:var(--text-dim); font-size:13.5px; line-height:1.7; margin:0 0 18px; }
+.pause-card .eyebrow{ margin-bottom:6px; }
+.pause-actions{ display:flex; flex-direction:column; gap:10px; margin-bottom:14px; }
+.pause-note{ font-size:12px !important; margin:0 !important; }
+.saved-banner{ margin-top:22px; padding:18px 20px; border-color:var(--gold); display:flex; flex-direction:column; gap:10px; }
+.saved-title{ font-family:var(--font-head); font-size:17px; font-weight:700; color:var(--gold); }
+.saved-desc{ font-size:13px; color:var(--text-dim); }
+.saved-actions{ display:flex; gap:10px; flex-wrap:wrap; }
+
+/* ---------- 追加: ツール(図鑑・全国回答) ---------- */
+.tools-grid{ grid-template-columns:1fr; }
+@media(min-width:640px){ .tools-grid{ grid-template-columns:repeat(2,1fr); } }
+.tools-grid .best{ margin-top:auto; }
+.map-wrap.tall{ height:360px; }
+@media(min-width:720px){ .map-wrap.tall{ height:540px; } }
+
+/* 検索欄 */
+.search-wrap{ position:relative; margin-bottom:12px; }
+.search-input{
+  width:100%; background:var(--surface-2); border:1px solid var(--line); color:var(--text);
+  font-size:15px; padding:13px 14px; border-radius:10px; outline:none;
+}
+.search-input:focus{ border-color:var(--gold); }
+.suggest-list{
+  position:absolute; left:0; right:0; top:100%; margin-top:6px; z-index:600;
+  background:var(--surface); border:1px solid var(--line); border-radius:10px; overflow:hidden;
+  box-shadow:0 10px 26px rgba(0,0,0,.35);
+}
+.suggest-item{
+  display:flex; justify-content:space-between; align-items:center; gap:10px; width:100%;
+  background:transparent; color:var(--text); font-size:14px; padding:11px 14px; text-align:left; border-bottom:1px solid var(--line);
+}
+.suggest-item:last-child{ border-bottom:none; }
+.suggest-item:hover{ background:var(--surface-2); }
+.suggest-en{ font-family:var(--font-mono); font-size:11px; color:var(--text-dim); }
+.suggest-empty{ padding:12px 14px; font-size:13px; color:var(--text-dim); }
+
+/* 国情報パネル */
+.info-panel{ margin-top:14px; padding:4px 2px 2px; }
+.info-empty{ padding:18px 8px; text-align:center; color:var(--text-dim); font-size:13.5px; }
+.info-head{ display:flex; align-items:center; gap:14px; margin-bottom:14px; }
+.info-flag{ width:auto; height:48px; max-width:84px; object-fit:contain; border-radius:5px; border:1px solid var(--line); background:var(--surface-2); }
+.info-head h3{ font-size:24px; }
+.info-en{ font-family:var(--font-mono); font-size:12px; color:var(--text-dim); margin-top:2px; }
+.info-grid{ display:grid; grid-template-columns:1fr; gap:10px; }
+@media(min-width:640px){ .info-grid{ grid-template-columns:1.2fr 1fr 1.4fr; } }
+.info-cell{ background:var(--surface-2); border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
+.info-cell .lbl{ font-family:var(--font-mono); font-size:10.5px; color:var(--text-dim); letter-spacing:.1em; margin-bottom:6px; }
+.info-cell .val{ font-size:15px; line-height:1.55; }
+.info-foot{ margin-top:10px; font-size:11px; color:var(--text-dim); text-align:right; }
+
+/* 全国回答チャレンジ */
+.allc-stat{ font-family:var(--font-mono); font-size:13px; color:var(--text-dim); }
+.allc-stat b{ color:var(--text); font-size:16px; }
+.allc-msg{ margin:10px 0 12px; min-height:22px; font-size:13.5px; color:var(--text-dim); }
+.allc-msg.ok{ color:var(--emerald); }
+.allc-msg.ng{ color:var(--crimson); }
+.allc-msg.info{ color:var(--gold); }
+.answer-row input#allcInput{
+  flex:1; min-width:180px; background:var(--surface-2); border:1px solid var(--line); color:var(--text);
+  font-size:15px; padding:13px 14px; border-radius:10px; outline:none;
+}
+.answer-row input#allcInput:focus{ border-color:var(--gold); }
+.answer-row input#allcInput.wrong{ border-color:var(--crimson); animation:shake .3s; }
+
+/* 全国回答の結果 */
+.cont-wrap{ display:flex; flex-direction:column; gap:12px; margin-top:6px; }
+.cont-block{ background:var(--surface); border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
+.cont-head{ display:flex; justify-content:space-between; font-size:14px; margin-bottom:8px; }
+.cont-head b{ font-family:var(--font-mono); color:var(--gold); }
+.cont-clear{ font-size:12.5px; color:var(--emerald); }
+.chip-list{ display:flex; flex-wrap:wrap; gap:6px; }
+.chip{ font-size:12px; padding:4px 10px; border-radius:999px; background:var(--surface-2); border:1px solid var(--line); color:var(--text-dim); }
+.chip-ok{ color:var(--text); border-color:var(--emerald); }
+.answered-details{ margin-top:16px; background:var(--surface); border:1px solid var(--line); border-radius:12px; padding:12px 16px; }
+.answered-details summary{ cursor:pointer; font-size:13.5px; }
